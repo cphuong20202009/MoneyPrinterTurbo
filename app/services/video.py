@@ -11,6 +11,7 @@ from functools import lru_cache
 from typing import List
 from loguru import logger
 import numpy as np
+import moviepy.config as moviepy_config
 from moviepy import (
     AudioFileClip,
     ColorClip,
@@ -22,6 +23,7 @@ from moviepy import (
     afx,
 )
 from moviepy.video.tools.subtitles import SubtitlesClip
+from moviepy.video.io import ffmpeg_reader, ffmpeg_writer
 from PIL import Image, ImageDraw, ImageFont
 
 from app.config import config
@@ -362,6 +364,16 @@ def _open_image_clip_with_fallback(image_path: str):
         return ImageClip(sanitized_path), sanitized_path
 
 
+def _configure_moviepy_ffmpeg_binary():
+    ffmpeg_binary = utils.get_ffmpeg_binary()
+    if ffmpeg_binary and ffmpeg_binary != "ffmpeg":
+        os.environ.setdefault("IMAGEIO_FFMPEG_EXE", ffmpeg_binary)
+        os.environ.setdefault("FFMPEG_BINARY", ffmpeg_binary)
+        moviepy_config.FFMPEG_BINARY = ffmpeg_binary
+        ffmpeg_reader.FFMPEG_BINARY = ffmpeg_binary
+        ffmpeg_writer.FFMPEG_BINARY = ffmpeg_binary
+
+
 def _open_video_clip_quietly(video_path: str, audio: bool = False) -> VideoFileClip:
     """
     安静地打开视频文件，避免 MoviePy 2.1.x 把 ffmpeg 探测信息直接打印到 stdout。
@@ -378,6 +390,8 @@ def _open_video_clip_quietly(video_path: str, audio: bool = False) -> VideoFileC
        最终音频会在 `generate_video()` 阶段统一挂载；
     3. 如果依赖库确实输出了内容，降级为 debug 日志，便于必要时排查。
     """
+    _configure_moviepy_ffmpeg_binary()
+
     captured_stdout = io.StringIO()
     with redirect_stdout(captured_stdout):
         clip = VideoFileClip(video_path, audio=audio)
@@ -1025,7 +1039,14 @@ def preprocess_video(materials: List[MaterialInfo], clip_duration=4):
                 )
             else:
                 clip = _open_video_clip_quietly(material_source_path)
-        except Exception:
+        except Exception as exc:
+            if ext in const.FILE_TYPE_VIDEOS:
+                logger.warning(
+                    f"skip unreadable local video material: {material.url}, "
+                    f"error: {str(exc)}"
+                )
+                continue
+
             # 非标准扩展名或探测失败时再回退到图片模式，兼容历史上直接传本地图片路径的情况。
             try:
                 clip, material_source_path = _open_image_clip_with_fallback(

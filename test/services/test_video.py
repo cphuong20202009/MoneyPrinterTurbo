@@ -201,6 +201,48 @@ class TestVideoService(unittest.TestCase):
         ), patch.dict(sys.modules, {"imageio_ffmpeg": fake_imageio_ffmpeg}):
             self.assertEqual(utils.get_ffmpeg_binary(), "/tmp/bundled-ffmpeg")
 
+    def test_configure_moviepy_ffmpeg_binary_sets_moviepy_env(self):
+        """
+        本地视频预处理也必须显式使用统一解析出的 ffmpeg，否则 PATH 中没有
+        ffmpeg 时 .MOV/.MP4 可能会在 MoviePy 读取阶段失败。
+        """
+        original_config_binary = vd.moviepy_config.FFMPEG_BINARY
+        original_reader_binary = vd.ffmpeg_reader.FFMPEG_BINARY
+        original_writer_binary = vd.ffmpeg_writer.FFMPEG_BINARY
+        try:
+            with patch.dict(os.environ, {}, clear=True), patch.object(
+                utils, "get_ffmpeg_binary", return_value="/tmp/bundled-ffmpeg"
+            ):
+                vd._configure_moviepy_ffmpeg_binary()
+
+                self.assertEqual(os.environ["IMAGEIO_FFMPEG_EXE"], "/tmp/bundled-ffmpeg")
+                self.assertEqual(os.environ["FFMPEG_BINARY"], "/tmp/bundled-ffmpeg")
+                self.assertEqual(vd.moviepy_config.FFMPEG_BINARY, "/tmp/bundled-ffmpeg")
+                self.assertEqual(vd.ffmpeg_reader.FFMPEG_BINARY, "/tmp/bundled-ffmpeg")
+                self.assertEqual(vd.ffmpeg_writer.FFMPEG_BINARY, "/tmp/bundled-ffmpeg")
+        finally:
+            vd.moviepy_config.FFMPEG_BINARY = original_config_binary
+            vd.ffmpeg_reader.FFMPEG_BINARY = original_reader_binary
+            vd.ffmpeg_writer.FFMPEG_BINARY = original_writer_binary
+
+    def test_preprocess_video_does_not_open_known_video_as_image_after_probe_failure(self):
+        """
+        .MOV/.MP4 等已知视频扩展名探测失败时，应保留原始视频读取错误并跳过；
+        不能再回退到图片模式，否则日志会变成误导性的 cannot identify image。
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            video_file = os.path.join(temp_dir, "clip.MOV")
+            Path(video_file).write_bytes(b"fake-video")
+
+            with patch.object(utils, "storage_dir", return_value=temp_dir), patch.object(
+                vd, "_open_video_clip_quietly", side_effect=RuntimeError("video probe failed")
+            ) as open_video, patch.object(vd, "_open_image_clip_with_fallback") as open_image:
+                materials = vd.preprocess_video([MaterialInfo(url="clip.MOV")])
+
+            self.assertEqual(materials, [])
+            open_video.assert_called_once_with(video_file)
+            open_image.assert_not_called()
+
     def test_get_effective_video_codec_falls_back_when_encoder_missing(self):
         """
         用户选择的硬件编码器必须先经过 FFmpeg encoder 列表检测。检测不到
