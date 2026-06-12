@@ -221,6 +221,19 @@ subtitle_provider = "edge"
 # If the selected encoder is not supported by the current FFmpeg or driver, the app falls back to libx264.
 # Available values: "libx264", "h264_nvenc", "h264_amf", "h264_qsv", "h264_mf", "h264_videotoolbox"
 # video_codec = "libx264"
+
+# libx264 output quality. Lower CRF means better quality and larger files.
+# Recommended values: 16 for high quality, 18 for good quality, 14 for near-lossless.
+# video_crf = 16
+
+# libx264 encoding preset. Slower presets compress better at the same quality.
+# Available values: "ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"
+# video_preset = "slow"
+
+# Output resolution. Defaults are 1920x1080 for landscape, 1080x1920 for portrait,
+# and 1080x1080 for square. Set 2160x3840 for 4K portrait output.
+# video_width = 1080
+# video_height = 1920
 #########################################################################################
 
 # 当视频生成成功后，API服务提供的视频下载接入点，默认为当前服务的地址和监听端口

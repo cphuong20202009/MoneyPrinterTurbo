@@ -19,7 +19,7 @@ from app.controllers.manager.base_manager import TaskQueueFullError
 from app.controllers.manager.memory_manager import InMemoryTaskManager
 from app.controllers.v1 import video as video_controller
 from app.models import const
-from app.models.schema import MaterialInfo
+from app.models.schema import MaterialInfo, VideoAspect
 from app.services import state as sm
 from app.services import video as vd
 from app.utils import utils
@@ -201,6 +201,41 @@ class TestVideoService(unittest.TestCase):
         ), patch.dict(sys.modules, {"imageio_ffmpeg": fake_imageio_ffmpeg}):
             self.assertEqual(utils.get_ffmpeg_binary(), "/tmp/bundled-ffmpeg")
 
+    def test_libx264_quality_kwargs_use_configured_crf_and_preset(self):
+        config.app["video_crf"] = 14
+        config.app["video_preset"] = "slower"
+
+        kwargs = vd._with_video_quality_kwargs("libx264", {"fps": 30})
+
+        self.assertEqual(kwargs["preset"], "slower")
+        self.assertEqual(kwargs["ffmpeg_params"], ["-crf", "14"])
+
+    def test_hardware_codec_does_not_receive_libx264_quality_kwargs(self):
+        config.app["video_crf"] = 14
+        config.app["video_preset"] = "slower"
+
+        kwargs = vd._with_video_quality_kwargs("h264_nvenc", {"fps": 30})
+
+        self.assertEqual(kwargs, {"fps": 30})
+
+    def test_configured_video_resolution_overrides_aspect_default(self):
+        config.app["video_width"] = 2160
+        config.app["video_height"] = 3840
+
+        self.assertEqual(
+            vd._get_configured_video_resolution(VideoAspect.portrait),
+            (2160, 3840),
+        )
+
+    def test_invalid_configured_video_resolution_falls_back_to_aspect_default(self):
+        config.app["video_width"] = "bad"
+        config.app["video_height"] = 3840
+
+        self.assertEqual(
+            vd._get_configured_video_resolution(VideoAspect.portrait),
+            (1080, 1920),
+        )
+
     def test_configure_moviepy_ffmpeg_binary_sets_moviepy_env(self):
         """
         本地视频预处理也必须显式使用统一解析出的 ffmpeg，否则 PATH 中没有
@@ -364,7 +399,12 @@ class TestVideoService(unittest.TestCase):
             call.args[0][call.args[0].index("-c:v") + 1]
             for call in run.call_args_list
         ]
+        fallback_command = run.call_args_list[-1].args[0]
         self.assertEqual(used_codecs, ["h264_nvenc", "libx264"])
+        self.assertIn("-crf", fallback_command)
+        self.assertIn(str(vd._DEFAULT_VIDEO_CRF), fallback_command)
+        self.assertIn("-preset", fallback_command)
+        self.assertIn(vd._DEFAULT_VIDEO_PRESET, fallback_command)
         self.assertIn("h264_nvenc", vd._runtime_disabled_video_codecs)
 
     def test_concat_video_clips_does_not_disable_codec_when_fallback_also_fails(self):

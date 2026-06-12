@@ -71,6 +71,8 @@ audio_bitrate = "192k"
 fps = 30
 _BGM_EXTENSIONS = (".mp3",)
 _DEFAULT_VIDEO_CODEC = "libx264"
+_DEFAULT_VIDEO_CRF = 16
+_DEFAULT_VIDEO_PRESET = "slow"
 _SUPPORTED_VIDEO_CODECS = (
     "libx264",
     "h264_nvenc",
@@ -78,6 +80,17 @@ _SUPPORTED_VIDEO_CODECS = (
     "h264_qsv",
     "h264_mf",
     "h264_videotoolbox",
+)
+_SUPPORTED_LIBX264_PRESETS = (
+    "ultrafast",
+    "superfast",
+    "veryfast",
+    "faster",
+    "fast",
+    "medium",
+    "slow",
+    "slower",
+    "veryslow",
 )
 _runtime_disabled_video_codecs = set()
 
@@ -154,6 +167,84 @@ def _get_configured_video_codec() -> str:
         )
         return _DEFAULT_VIDEO_CODEC
     return configured_codec
+
+
+def _get_configured_video_crf() -> int:
+    try:
+        crf = int(config.app.get("video_crf", _DEFAULT_VIDEO_CRF))
+    except (TypeError, ValueError):
+        logger.warning(
+            f"invalid video_crf configured, fallback to {_DEFAULT_VIDEO_CRF}"
+        )
+        return _DEFAULT_VIDEO_CRF
+
+    if crf < 0 or crf > 51:
+        logger.warning(
+            f"video_crf out of range: {crf}, fallback to {_DEFAULT_VIDEO_CRF}"
+        )
+        return _DEFAULT_VIDEO_CRF
+    return crf
+
+
+def _get_configured_video_preset() -> str:
+    preset = str(
+        config.app.get("video_preset", _DEFAULT_VIDEO_PRESET) or _DEFAULT_VIDEO_PRESET
+    ).strip()
+    if preset not in _SUPPORTED_LIBX264_PRESETS:
+        logger.warning(
+            f"unsupported video_preset configured: {preset}, "
+            f"fallback to {_DEFAULT_VIDEO_PRESET}"
+        )
+        return _DEFAULT_VIDEO_PRESET
+    return preset
+
+
+def _with_video_quality_kwargs(codec: str, kwargs: dict) -> dict:
+    encode_kwargs = dict(kwargs)
+    if codec != _DEFAULT_VIDEO_CODEC:
+        return encode_kwargs
+
+    encode_kwargs.setdefault("preset", _get_configured_video_preset())
+
+    ffmpeg_params = list(encode_kwargs.get("ffmpeg_params") or [])
+    if "-crf" not in ffmpeg_params:
+        ffmpeg_params.extend(["-crf", str(_get_configured_video_crf())])
+    encode_kwargs["ffmpeg_params"] = ffmpeg_params
+    return encode_kwargs
+
+
+def _libx264_ffmpeg_quality_args(codec: str) -> list[str]:
+    if codec != _DEFAULT_VIDEO_CODEC:
+        return []
+    return [
+        "-preset",
+        _get_configured_video_preset(),
+        "-crf",
+        str(_get_configured_video_crf()),
+    ]
+
+
+def _get_configured_video_resolution(video_aspect: VideoAspect) -> tuple[int, int]:
+    default_width, default_height = VideoAspect(video_aspect).to_resolution()
+
+    try:
+        configured_width = int(config.app.get("video_width", default_width))
+        configured_height = int(config.app.get("video_height", default_height))
+    except (TypeError, ValueError):
+        logger.warning(
+            "invalid video_width/video_height configured, "
+            f"fallback to {default_width}x{default_height}"
+        )
+        return default_width, default_height
+
+    if configured_width <= 0 or configured_height <= 0:
+        logger.warning(
+            "video_width/video_height must be positive, "
+            f"fallback to {default_width}x{default_height}"
+        )
+        return default_width, default_height
+
+    return configured_width, configured_height
 
 
 @lru_cache(maxsize=16)
@@ -235,7 +326,8 @@ def _fallback_write_videofile(clip, output_file: str, failed_codec: str, reason:
     文件被占用、目录权限、杀软拦截等通用 IO 问题。只有 libx264 能成功写出时，
     才能判断原始失败大概率来自硬件编码器本身，避免误伤后续任务。
     """
-    clip.write_videofile(output_file, codec=_DEFAULT_VIDEO_CODEC, **kwargs)
+    fallback_kwargs = _with_video_quality_kwargs(_DEFAULT_VIDEO_CODEC, kwargs)
+    clip.write_videofile(output_file, codec=_DEFAULT_VIDEO_CODEC, **fallback_kwargs)
     _disable_runtime_video_codec(failed_codec, reason)
     return _DEFAULT_VIDEO_CODEC
 
@@ -249,7 +341,8 @@ def _write_videofile_with_codec_fallback(clip, output_file: str, codec: str, **k
     """
     effective_codec = _get_effective_video_codec(codec)
     try:
-        clip.write_videofile(output_file, codec=effective_codec, **kwargs)
+        encode_kwargs = _with_video_quality_kwargs(effective_codec, kwargs)
+        clip.write_videofile(output_file, codec=effective_codec, **encode_kwargs)
         return effective_codec
     except Exception as exc:
         if effective_codec == _DEFAULT_VIDEO_CODEC:
@@ -300,6 +393,7 @@ def concat_video_clips_with_ffmpeg(
             concat_list_file,
             "-c:v",
             codec,
+            *_libx264_ffmpeg_quality_args(codec),
             "-threads",
             str(threads or 2),
             "-pix_fmt",
@@ -535,8 +629,7 @@ def combine_videos(
     transition_value = getattr(video_transition_mode, "value", video_transition_mode)
     output_dir = os.path.dirname(combined_video_path)
 
-    aspect = VideoAspect(video_aspect)
-    video_width, video_height = aspect.to_resolution()
+    video_width, video_height = _get_configured_video_resolution(video_aspect)
 
     processed_clips = []
     subclipped_items = []
@@ -815,7 +908,7 @@ def generate_video(
     params: VideoParams,
 ):
     aspect = VideoAspect(params.video_aspect)
-    video_width, video_height = aspect.to_resolution()
+    video_width, video_height = _get_configured_video_resolution(aspect)
 
     logger.info(f"generating video: {video_width} x {video_height}")
     logger.info(f"  ① video: {video_path}")
@@ -1091,7 +1184,13 @@ def preprocess_video(materials: List[MaterialInfo], clip_duration=4):
 
                 # Output the video to a file.
                 video_file = f"{material_source_path}.mp4"
-                final_clip.write_videofile(video_file, fps=30, logger=None)
+                _write_videofile_with_codec_fallback(
+                    final_clip,
+                    video_file,
+                    codec=_get_configured_video_codec(),
+                    fps=30,
+                    logger=None,
+                )
                 close_clip(clip)
                 close_clip(final_clip)
                 material.url = video_file
