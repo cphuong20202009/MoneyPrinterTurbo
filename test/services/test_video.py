@@ -140,6 +140,32 @@ class TestVideoService(unittest.TestCase):
 
         self.assertEqual(materials, [])
 
+    def test_preprocess_video_accepts_legacy_absolute_local_video_path(self):
+        """
+        WebUI/Docker 历史任务可能保存了另一个运行环境中的绝对路径。只要同名
+        文件仍存在于当前 local_videos 白名单目录，应按文件名恢复使用。
+        """
+        if not os.path.exists(self.test_img_path):
+            self.fail(f"test image not found: {self.test_img_path}")
+
+        local_videos_dir = utils.storage_dir("local_videos", create=True)
+        safe_img_path = os.path.join(local_videos_dir, "test-legacy-path.png")
+        shutil.copy2(self.test_img_path, safe_img_path)
+        legacy_url = "/MoneyPrinterTurbo/storage/local_videos/test-legacy-path.png"
+
+        try:
+            materials = vd.preprocess_video(
+                [MaterialInfo(provider="local", url=legacy_url)], clip_duration=4
+            )
+
+            self.assertEqual(len(materials), 1)
+            self.assertTrue(materials[0].url.endswith(".mp4"))
+            if os.path.exists(materials[0].url):
+                os.remove(materials[0].url)
+        finally:
+            if os.path.exists(safe_img_path):
+                os.remove(safe_img_path)
+
     def test_get_bgm_file_accepts_song_directory_filename(self):
         """
         BGM 列表接口现在只暴露文件名；生成视频时应能把文件名安全解析回

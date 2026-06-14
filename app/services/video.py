@@ -1114,14 +1114,27 @@ def preprocess_video(materials: List[MaterialInfo], clip_duration=4):
                 local_videos_dir, material.url
             )
         except ValueError as exc:
-            # local video_source 的素材路径来自 API 参数，必须限制在专用素材目录。
-            # 允许用户传文件名，也兼容历史返回的绝对路径，但不允许逃逸到系统
-            # 其他目录，避免任意文件读取或通过 MoviePy 探测本地敏感文件。
-            logger.warning(
-                f"skip unsafe local material: {material.url}, "
-                f"local_videos_dir: {local_videos_dir}, error: {str(exc)}"
-            )
-            continue
+            # 历史 WebUI/Docker 任务可能持久化了另一个运行环境里的绝对路径，
+            # 例如 /MoneyPrinterTurbo/storage/local_videos/foo.mp4。只按文件名
+            # 回退到当前 local_videos 白名单目录，仍然不读取白名单目录外的文件。
+            fallback_material = os.path.basename(material.url)
+            try:
+                material_source_path = file_security.resolve_path_within_directory(
+                    local_videos_dir, fallback_material
+                )
+                logger.warning(
+                    f"resolved local material by filename fallback: {material.url} -> "
+                    f"{material_source_path}, original error: {str(exc)}"
+                )
+            except ValueError:
+                # local video_source 的素材路径来自 API 参数，必须限制在专用素材目录。
+                # 允许用户传文件名，也兼容历史返回的绝对路径，但不允许逃逸到系统
+                # 其他目录，避免任意文件读取或通过 MoviePy 探测本地敏感文件。
+                logger.warning(
+                    f"skip unsafe local material: {material.url}, "
+                    f"local_videos_dir: {local_videos_dir}, error: {str(exc)}"
+                )
+                continue
 
         ext = utils.parse_extension(material_source_path)
         try:

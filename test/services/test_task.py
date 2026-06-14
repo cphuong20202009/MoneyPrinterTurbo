@@ -44,6 +44,85 @@ class TestTaskService(unittest.TestCase):
             video_script_prompt="语气轻松",
             custom_system_prompt="Only write short narration.",
         )
+
+    def test_start_video_generates_independent_versions(self):
+        params = VideoParams(
+            video_subject="du lịch Đà Nẵng",
+            video_script="",
+            video_terms=None,
+            video_count=5,
+            video_source="pexels",
+            voice_name="vi-VN-NamMinhNeural-Male",
+            video_clip_duration=3,
+            video_concat_mode="random",
+        )
+
+        scripts = [f"script version {i}" for i in range(1, 6)]
+
+        def fake_audio(task_id, version_params, video_script, version_index=None):
+            return f"/tmp/audio-{version_index}.mp3", 10 + version_index, object()
+
+        def fake_subtitle(task_id, version_params, video_script, sub_maker, audio_file, version_index=None):
+            return f"/tmp/subtitle-{version_index}.srt"
+
+        def fake_materials(task_id, version_params, video_terms, audio_duration):
+            return [f"/tmp/material-{len(video_terms)}-{audio_duration}.mp4"]
+
+        def fake_final(task_id, version_params, downloaded_videos, audio_file, subtitle_path, version_index):
+            return f"/tmp/final-{version_index}.mp4", f"/tmp/combined-{version_index}.mp4"
+
+        with patch.object(tm.llm, "generate_script", side_effect=scripts), patch.object(
+            tm, "generate_terms", side_effect=lambda task_id, params, script: [f"term-{script}"]
+        ), patch.object(tm, "generate_audio", side_effect=fake_audio), patch.object(
+            tm, "generate_subtitle", side_effect=fake_subtitle
+        ), patch.object(tm, "get_video_materials", side_effect=fake_materials), patch.object(
+            tm, "generate_single_final_video", side_effect=fake_final
+        ), patch.object(tm, "save_versioned_script_data"), patch.object(
+            tm.upload_post.upload_post_service, "is_configured", return_value=False
+        ):
+            result = tm.start("version-task", params)
+
+        self.assertEqual(len(result["videos"]), 5)
+        self.assertEqual(len(result["scripts"]), 5)
+        self.assertEqual(len(result["audio_files"]), 5)
+        self.assertEqual(len(result["subtitle_paths"]), 5)
+        self.assertEqual(len(result["materials_list"]), 5)
+        self.assertEqual(result["scripts"], scripts)
+        self.assertNotEqual(result["versions"][0]["style"], result["versions"][1]["style"])
+
+    def test_final_video_filename_uses_video_subject(self):
+        self.assertEqual(
+            tm._final_video_filename("du lịch Đà Nẵng 2026!", 3),
+            "du-lich-da-nang-2026-3.mp4",
+        )
+
+        self.assertEqual(tm._final_video_filename("", 1), "video-1.mp4")
+
+    def test_generate_single_final_video_uses_subject_filename(self):
+        params = VideoParams(
+            video_subject="du lịch Đà Nẵng",
+            video_aspect="9:16",
+            video_concat_mode="random",
+            video_transition_mode=None,
+            video_clip_duration=3,
+            n_threads=1,
+        )
+
+        with patch.object(tm.video, "combine_videos"), patch.object(
+            tm.video, "generate_video"
+        ) as generate_video:
+            final_path, combined_path = tm.generate_single_final_video(
+                task_id="filename-task",
+                params=params,
+                downloaded_videos=["/tmp/material.mp4"],
+                audio_file="/tmp/audio.mp3",
+                subtitle_path="/tmp/subtitle.srt",
+                version_index=2,
+            )
+
+        self.assertTrue(final_path.endswith("du-lich-da-nang-2.mp4"))
+        self.assertTrue(combined_path.endswith("combined-2.mp4"))
+        self.assertEqual(generate_video.call_args.kwargs["output_file"], final_path)
     
     def test_task_local_materials(self):
         task_id = "00000000-0000-0000-0000-000000000000"

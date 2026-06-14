@@ -772,7 +772,7 @@ with middle_panel:
         params.video_count = st.selectbox(
             tr("Number of Videos Generated Simultaneously"),
             options=[1, 2, 3, 4, 5],
-            index=0,
+            index=4,
         )
 
         with st.expander(tr("Advanced Video Settings"), expanded=False):
@@ -1300,12 +1300,13 @@ if start_button:
         params.video_materials = []
         persisted_local_materials = []
         for file in uploaded_files:
-            file_path = os.path.join(local_videos_dir, f"{file.file_id}_{file.name}")
+            material_filename = f"{file.file_id}_{file.name}"
+            file_path = os.path.join(local_videos_dir, material_filename)
             with open(file_path, "wb") as f:
                 f.write(file.getbuffer())
                 m = MaterialInfo()
                 m.provider = "local"
-                m.url = file_path
+                m.url = material_filename
                 params.video_materials.append(m)
                 persisted_local_materials.append(
                     {
