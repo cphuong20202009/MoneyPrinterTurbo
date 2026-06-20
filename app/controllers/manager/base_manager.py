@@ -8,6 +8,10 @@ class TaskQueueFullError(ValueError):
     pass
 
 
+class TaskNotQueuedError(ValueError):
+    pass
+
+
 class TaskManager:
     def __init__(self, max_concurrent_tasks: int, max_queued_tasks: int = 100):
         self.max_concurrent_tasks = max_concurrent_tasks
@@ -25,6 +29,7 @@ class TaskManager:
                 logger.info(
                     f"add task: {func.__name__}, current_tasks: {self.current_tasks}"
                 )
+                self.current_tasks += 1
                 self.execute_task(func, *args, **kwargs)
             else:
                 queue_size = self.queue_size()
@@ -43,6 +48,14 @@ class TaskManager:
                 )
                 self.enqueue({"func": func, "args": args, "kwargs": kwargs})
 
+    def remove_queued_task(self, task_id: str) -> bool:
+        with self.lock:
+            removed = self.remove_from_queue(task_id)
+            if not removed:
+                raise TaskNotQueuedError("task is not waiting in queue")
+            logger.info(f"removed queued task: {task_id}")
+            return True
+
     def execute_task(self, func: Callable, *args: Any, **kwargs: Any):
         thread = threading.Thread(
             target=self.run_task, args=(func, *args), kwargs=kwargs
@@ -51,8 +64,6 @@ class TaskManager:
 
     def run_task(self, func: Callable, *args: Any, **kwargs: Any):
         try:
-            with self.lock:
-                self.current_tasks += 1
             func(*args, **kwargs)  # call the function here, passing *args and **kwargs.
         finally:
             self.task_done()
@@ -64,9 +75,12 @@ class TaskManager:
                 and not self.is_queue_empty()
             ):
                 task_info = self.dequeue()
+                if not task_info:
+                    return
                 func = task_info["func"]
                 args = task_info.get("args", ())
                 kwargs = task_info.get("kwargs", {})
+                self.current_tasks += 1
                 self.execute_task(func, *args, **kwargs)
 
     def task_done(self):
@@ -84,4 +98,7 @@ class TaskManager:
         raise NotImplementedError()
 
     def queue_size(self):
+        raise NotImplementedError()
+
+    def remove_from_queue(self, task_id: str) -> bool:
         raise NotImplementedError()

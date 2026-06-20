@@ -7,17 +7,34 @@ from unittest.mock import patch
 # add project root to python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from app.config import config
+from app.models import const
 from app.services import task as tm
+from app.services import state as sm
 from app.models.schema import MaterialInfo, VideoParams
 
 resources_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources")
 
 class TestTaskService(unittest.TestCase):
     def setUp(self):
-        pass
+        self.original_app_config = dict(config.app)
     
     def tearDown(self):
-        pass
+        config.app.clear()
+        config.app.update(self.original_app_config)
+        tm.clear_cancel_task("cancel-task")
+        sm.state.delete_task("cancel-task")
+
+    def test_start_returns_canceled_when_cancel_requested(self):
+        params = VideoParams(video_subject="cancel me", video_script="script")
+
+        tm.request_cancel_task("cancel-task")
+        result = tm.start("cancel-task", params)
+
+        self.assertEqual(result, {"canceled": True})
+        self.assertEqual(
+            sm.state.get_task("cancel-task")["state"], const.TASK_STATE_CANCELED
+        )
 
     def test_generate_script_forwards_advanced_prompt_options(self):
         """
@@ -79,6 +96,8 @@ class TestTaskService(unittest.TestCase):
             tm, "generate_single_final_video", side_effect=fake_final
         ), patch.object(tm, "save_versioned_script_data"), patch.object(
             tm.upload_post.upload_post_service, "is_configured", return_value=False
+        ), patch.object(
+            tm.buffer_post.buffer_post_service, "is_configured", return_value=False
         ):
             result = tm.start("version-task", params)
 
@@ -89,6 +108,43 @@ class TestTaskService(unittest.TestCase):
         self.assertEqual(len(result["materials_list"]), 5)
         self.assertEqual(result["scripts"], scripts)
         self.assertNotEqual(result["versions"][0]["style"], result["versions"][1]["style"])
+
+    def test_queue_buffer_tiktok_posts_uses_generated_video_paths(self):
+        params = VideoParams(
+            video_subject="Demo subject",
+            video_script="Script line one",
+            video_count=2,
+        )
+        config.app["buffer_auto_queue"] = True
+
+        with patch.object(
+            tm.buffer_post.buffer_post_service, "is_configured", return_value=True
+        ), patch.object(
+            tm.buffer_post,
+            "queue_tiktok_video",
+            side_effect=[
+                {"success": True, "post": {"id": "post-1"}},
+                {"success": True, "post": {"id": "post-2"}},
+            ],
+        ) as queue_video:
+            results = tm.queue_buffer_tiktok_posts(
+                task_id="buffer-task",
+                params=params,
+                final_video_paths=[
+                    "/tmp/buffer-task/final-1.mp4",
+                    "/tmp/buffer-task/final-2.mp4",
+                ],
+                scripts=["script 1", "script 2"],
+            )
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(queue_video.call_count, 2)
+        self.assertEqual(queue_video.call_args_list[0].kwargs["task_id"], "buffer-task")
+        self.assertEqual(
+            queue_video.call_args_list[0].kwargs["video_path"],
+            "/tmp/buffer-task/final-1.mp4",
+        )
+        self.assertEqual(queue_video.call_args_list[0].kwargs["version_index"], 1)
 
     def test_final_video_filename_uses_video_subject(self):
         self.assertEqual(

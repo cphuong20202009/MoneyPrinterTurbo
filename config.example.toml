@@ -73,7 +73,7 @@ openai_api_key = ""
 openai_base_url = ""
 # Check your available models at https://platform.openai.com/account/limits
 # 如果使用兼容供应商，请填写该平台要求的模型 ID。
-openai_model_name = "gpt-4o-mini"
+openai_model_name = "gpt-5.4-mini"
 
 ########## AIHubMix API Key
 # AIHubMix is OpenAI-compatible and can use one API key to access multiple models.
@@ -347,3 +347,45 @@ upload_post_platforms = ["tiktok", "instagram"]
 
 # Automatically cross-post videos after generation (if false, you'll need to call the API manually)
 upload_post_auto_upload = false
+
+########## Buffer (Queue generated videos to TikTok)
+# Buffer API uses GraphQL and adds posts to a connected channel queue.
+# Docs: https://developers.buffer.com/examples/create-video-post.html
+#
+# Important: Buffer does not accept direct file uploads. It must fetch the video
+# from a public URL. Set `endpoint` above to a public HTTPS URL that can serve
+# generated task videos, for example:
+# endpoint = "https://your-domain.com"
+
+# Enable/disable Buffer integration
+buffer_enabled = false
+
+# Your Buffer personal API key. Buffer expects it as a Bearer token.
+buffer_api_key = ""
+
+# TikTok channel ID from Buffer. You can fetch channels from Buffer's API.
+buffer_tiktok_channel_id = ""
+
+# Automatically add generated videos to the TikTok queue after generation.
+buffer_auto_queue = false
+
+# Optional fixed text/caption for Buffer posts. If empty, the video subject or
+# first script line will be used.
+buffer_post_text = ""
+
+# Hashtags appended after the video subject when buffer_post_text is empty.
+buffer_post_hashtags = "#trendtiktok #cokiengcolanh #phongthuy"
+
+########## Cloudinary (Host generated videos for Buffer)
+# Buffer requires media URLs to be public and stable. Enable Cloudinary to
+# upload each generated video first, then queue the Cloudinary `secure_url`
+# to Buffer.
+#
+# Cloudinary upload docs:
+# https://cloudinary.com/documentation/image_upload_api_reference
+
+cloudinary_enabled = false
+cloudinary_cloud_name = ""
+cloudinary_api_key = ""
+cloudinary_api_secret = ""
+cloudinary_folder = "moneyprinterturbo"

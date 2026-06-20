@@ -19,3 +19,20 @@ class InMemoryTaskManager(TaskManager):
 
     def queue_size(self):
         return self.queue.qsize()
+
+    def remove_from_queue(self, task_id: str) -> bool:
+        removed = False
+        kept_tasks = []
+
+        while not self.queue.empty():
+            task = self.queue.get()
+            queued_task_id = task.get("kwargs", {}).get("task_id")
+            if queued_task_id == task_id:
+                removed = True
+                continue
+            kept_tasks.append(task)
+
+        for task in kept_tasks:
+            self.queue.put(task)
+
+        return removed

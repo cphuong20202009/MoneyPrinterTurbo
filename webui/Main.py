@@ -15,6 +15,9 @@ if root_dir not in sys.path:
     print("")
 
 from app.config import config
+from app.controllers.manager.base_manager import TaskNotQueuedError, TaskQueueFullError
+from app.controllers.manager.memory_manager import InMemoryTaskManager
+from app.models import const
 from app.models.schema import (
     MaterialInfo,
     VideoAspect,
@@ -23,6 +26,7 @@ from app.models.schema import (
     VideoTransitionMode,
 )
 from app.services import llm, voice
+from app.services import state as sm
 from app.services import task as tm
 from app.utils import utils
 
@@ -75,6 +79,16 @@ if "ui_language" not in st.session_state:
 if "local_video_materials" not in st.session_state:
     # 记住用户最近一次已经落盘的本地素材，避免仅修改文案后二次生成时丢失素材列表。
     st.session_state["local_video_materials"] = []
+if "queued_video_tasks" not in st.session_state:
+    st.session_state["queued_video_tasks"] = []
+
+
+@st.cache_resource
+def get_webui_task_manager():
+    return InMemoryTaskManager(
+        max_concurrent_tasks=config.app.get("max_concurrent_tasks", 1),
+        max_queued_tasks=config.app.get("max_queued_tasks", 100),
+    )
 
 # 加载语言文件
 locales = utils.load_locales(i18n_dir)
@@ -1328,42 +1342,68 @@ if start_button:
             if m.url:
                 params.video_materials.append(m)
 
-    log_container = st.empty()
-    log_records = []
-
-    def log_received(msg):
-        if config.ui["hide_log"]:
-            return
-        with log_container:
-            log_records.append(msg)
-            st.code("\n".join(log_records))
-
-    logger.add(log_received)
-
-    st.toast(tr("Generating Video"))
-    logger.info(tr("Start Generating Video"))
+    st.toast("Video task queued")
+    logger.info("Queue video generation task")
     logger.info(utils.to_json(params))
     scroll_to_bottom()
 
-    result = tm.start(task_id=task_id, params=params)
-    if not result or "videos" not in result:
-        st.error(tr("Video Generation Failed"))
-        logger.error(tr("Video Generation Failed"))
+    task_manager = get_webui_task_manager()
+    try:
+        sm.state.update_task(task_id, state=const.TASK_STATE_QUEUED, progress=0)
+        task_manager.add_task(tm.start, task_id=task_id, params=params, stop_at="video")
+    except TaskQueueFullError as e:
+        sm.state.delete_task(task_id)
+        st.error(str(e))
+        logger.warning(f"reject video task because queue is full: {task_id}")
         scroll_to_bottom()
         st.stop()
 
-    video_files = result.get("videos", [])
-    st.success(tr("Video Generation Completed"))
-    try:
-        if video_files:
-            player_cols = st.columns(len(video_files) * 2 + 1)
-            for i, url in enumerate(video_files):
-                player_cols[i * 2 + 1].video(url)
-    except Exception:
-        pass
+    if task_id not in st.session_state["queued_video_tasks"]:
+        st.session_state["queued_video_tasks"].insert(0, task_id)
 
-    open_task_folder(task_id)
-    logger.info(tr("Video Generation Completed"))
+    queue_size = task_manager.queue_size()
+    st.success(
+        f"Đã đưa video vào queue. Task ID: {task_id}. "
+        f"Đang chạy: {task_manager.current_tasks}, đang chờ: {queue_size}."
+    )
+    logger.info(
+        f"video task queued: {task_id}, current_tasks: {task_manager.current_tasks}, "
+        f"queue_size: {queue_size}"
+    )
+    st.info("Bạn có thể tạo video tiếp theo ngay, không cần chờ task này hoàn tất.")
     scroll_to_bottom()
 
 config.save_config()
+
+queued_task_ids = st.session_state.get("queued_video_tasks", [])
+if queued_task_ids:
+    with st.sidebar.expander("Queued video tasks", expanded=False):
+        task_manager = get_webui_task_manager()
+        for queued_task_id in queued_task_ids[:10]:
+            task = sm.state.get_task(queued_task_id) or {}
+            state = task.get("state", "queued")
+            progress = task.get("progress", 0)
+            st.write(f"{queued_task_id} | state: {state} | progress: {progress}%")
+            if state == const.TASK_STATE_QUEUED:
+                if st.button("Cancel", key=f"cancel-{queued_task_id}"):
+                    try:
+                        task_manager.remove_queued_task(queued_task_id)
+                        sm.state.update_task(
+                            queued_task_id,
+                            state=const.TASK_STATE_CANCELED,
+                            progress=0,
+                        )
+                        st.session_state["queued_video_tasks"] = [
+                            task_id
+                            for task_id in st.session_state["queued_video_tasks"]
+                            if task_id != queued_task_id
+                        ]
+                        st.toast(f"Canceled task {queued_task_id}")
+                        st.rerun()
+                    except TaskNotQueuedError:
+                        st.warning("Task này đã bắt đầu chạy hoặc không còn trong queue.")
+            elif state == const.TASK_STATE_PROCESSING:
+                if st.button("Stop", key=f"stop-{queued_task_id}"):
+                    tm.request_cancel_task(queued_task_id)
+                    st.toast(f"Stop requested for task {queued_task_id}")
+                    st.rerun()

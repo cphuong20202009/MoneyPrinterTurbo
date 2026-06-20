@@ -62,3 +62,16 @@ class RedisTaskManager(TaskManager):
 
     def queue_size(self):
         return self.redis_client.llen(self.queue)
+
+    def remove_from_queue(self, task_id: str) -> bool:
+        queued_items = self.redis_client.lrange(self.queue, 0, -1)
+        for item in queued_items:
+            try:
+                task_info = json.loads(item)
+            except (TypeError, ValueError):
+                continue
+
+            if task_info.get("kwargs", {}).get("task_id") == task_id:
+                return self.redis_client.lrem(self.queue, 1, item) > 0
+
+        return False

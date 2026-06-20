@@ -5,6 +5,8 @@ import shutil
 import sys
 import tempfile
 import types
+import threading
+import time
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -15,7 +17,7 @@ from moviepy import (
 # add project root to python path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from app.config import config
-from app.controllers.manager.base_manager import TaskQueueFullError
+from app.controllers.manager.base_manager import TaskNotQueuedError, TaskQueueFullError
 from app.controllers.manager.memory_manager import InMemoryTaskManager
 from app.controllers.v1 import video as video_controller
 from app.models import const
@@ -78,6 +80,60 @@ class TestSecurityControls(unittest.TestCase):
 
         with self.assertRaises(TaskQueueFullError):
             manager.add_task(lambda: None)
+
+    def test_task_manager_reserves_slot_before_worker_thread_runs(self):
+        """
+        任务启动线程前就要占用并发槽位，否则连续快速提交任务时，
+        worker 还没来得及递增 current_tasks，后续任务会绕过队列并发执行。
+        """
+        manager = InMemoryTaskManager(max_concurrent_tasks=1, max_queued_tasks=5)
+        release_first_task = threading.Event()
+        ran_second_task = threading.Event()
+
+        def first_task(**kwargs):
+            release_first_task.wait(timeout=2)
+
+        def second_task(**kwargs):
+            ran_second_task.set()
+
+        manager.add_task(first_task)
+        manager.add_task(second_task)
+
+        self.assertEqual(manager.current_tasks, 1)
+        self.assertEqual(manager.queue_size(), 1)
+        self.assertFalse(ran_second_task.is_set())
+
+        release_first_task.set()
+        deadline = time.time() + 2
+        while not ran_second_task.is_set() and time.time() < deadline:
+            time.sleep(0.01)
+
+        self.assertTrue(ran_second_task.is_set())
+
+    def test_task_manager_can_remove_waiting_task_from_queue(self):
+        manager = InMemoryTaskManager(max_concurrent_tasks=1, max_queued_tasks=5)
+        release_first_task = threading.Event()
+        ran_second_task = threading.Event()
+
+        def first_task(**kwargs):
+            release_first_task.wait(timeout=2)
+
+        def second_task(**kwargs):
+            ran_second_task.set()
+
+        manager.add_task(first_task, task_id="running-task")
+        manager.add_task(second_task, task_id="queued-task")
+
+        self.assertTrue(manager.remove_queued_task("queued-task"))
+        self.assertEqual(manager.queue_size(), 0)
+
+        release_first_task.set()
+        time.sleep(0.05)
+
+        self.assertFalse(ran_second_task.is_set())
+
+        with self.assertRaises(TaskNotQueuedError):
+            manager.remove_queued_task("running-task")
 
 class TestVideoService(unittest.TestCase):
     def setUp(self):

@@ -401,3 +401,39 @@ Trying to load the model directly from the local cache, if it exists.
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=harry0703/MoneyPrinterTurbo&type=Date)](https://star-history.com/#harry0703/MoneyPrinterTurbo&Date)
+
+
+
+## prompt tạo kịch bản
+Bạn là chuyên gia viết script audio TikTok Shop cho video bán hàng ngắn.
+
+Nhiệm vụ: Viết kịch bản audio tiếng Việt tự nhiên, có hook mạnh, giữ chân người xem và chốt mua nhẹ nhàng.
+
+Thông tin sản phẩm:
+[TÊN SẢN PHẨM]
+[GIÁ / DUNG TÍCH / XUẤT XỨ nếu có]
+[CÔNG DỤNG CHÍNH]
+[ĐỐI TƯỢNG PHÙ HỢP]
+[ĐIỂM KHÁC BIỆT]
+[ƯU ĐÃI / CTA nếu có]
+
+Yêu cầu:
+- Output chỉ là đoạn script dùng để đọc audio.
+- Không kèm tiêu đề.
+- Không kèm giải thích.
+- Không kèm cảnh quay.
+- Không kèm bullet point.
+- Không kèm nhãn như “Hook”, “CTA”, “Phiên bản”.
+- Không ghi chú thêm bất kỳ thông tin nào khác.
+- Độ dài: 60 giây.
+- Câu đầu phải có hook mạnh, đánh vào nỗi đau hoặc sự tò mò.
+- Văn phong như người thật review, tự nhiên, dễ đọc bằng TTS.
+- Câu ngắn, có nhịp ngắt tự nhiên.
+- Không quá quảng cáo.
+- Không dùng từ y tế quá đà.
+- Không cam kết tuyệt đối.
+- Không bịa công dụng ngoài thông tin sản phẩm.
+- Cuối script có CTA nhẹ như: “bấm vào giỏ hàng xem thử nha” hoặc “đang có deal thì tranh thủ nha”.
+- Phù hợp video TikTok Shop bán hoá mỹ phẩm nhập Mỹ.
+
+Hãy viết đúng 1 đoạn script audio hoàn chỉnh.
