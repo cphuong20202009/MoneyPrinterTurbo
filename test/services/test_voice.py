@@ -486,6 +486,60 @@ class TestVoiceService(unittest.TestCase):
         self.assertEqual(getattr(sub_maker, "subs", []), ["小米语音合成测试", "第二句话"])
         self.assertEqual(len(getattr(sub_maker, "offset", [])), 2)
 
+    def test_elevenlabs_tts_writes_mp3_and_builds_subtitle_timeline(self):
+        class _FakeResponse:
+            content = b"fake-elevenlabs-mp3"
+            text = ""
+
+            def raise_for_status(self):
+                return None
+
+        fake_audio_clip = SimpleNamespace(duration=2.5, close=lambda: None)
+
+        with tempfile.TemporaryDirectory() as tmp_dir, patch.object(
+            vs.requests,
+            "post",
+            return_value=_FakeResponse(),
+        ) as post, patch.object(
+            vs,
+            "AudioFileClip",
+            return_value=fake_audio_clip,
+        ), patch.object(
+            vs.config,
+            "app",
+            dict(
+                vs.config.app,
+                elevenlabs_api_key="eleven-key",
+                elevenlabs_model_id="eleven_turbo_v2_5",
+                elevenlabs_language_code="vi",
+                elevenlabs_output_format="mp3_44100_128",
+            ),
+        ):
+            voice_file = str(Path(tmp_dir) / "elevenlabs.mp3")
+            sub_maker = vs.tts(
+                text="Câu đầu tiên. Câu thứ hai.",
+                voice_name="elevenlabs:voice-123:Vietnamese Voice-Female",
+                voice_rate=1.0,
+                voice_file=voice_file,
+            )
+            generated_audio = Path(voice_file).read_bytes()
+
+        self.assertEqual(generated_audio, b"fake-elevenlabs-mp3")
+        self.assertIsNotNone(sub_maker)
+        self.assertEqual(len(getattr(sub_maker, "subs", [])), 2)
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://api.elevenlabs.io/v1/text-to-speech/voice-123",
+        )
+        self.assertEqual(post.call_args.kwargs["headers"]["xi-api-key"], "eleven-key")
+        self.assertEqual(
+            post.call_args.kwargs["json"]["model_id"], "eleven_turbo_v2_5"
+        )
+        self.assertEqual(post.call_args.kwargs["json"]["language_code"], "vi")
+        self.assertEqual(
+            post.call_args.kwargs["params"]["output_format"], "mp3_44100_128"
+        )
+
     def test_generate_subtitle_keeps_edge_provider_for_gemini_legacy_submaker(self):
         """
         验证 Gemini TTS 返回的 legacy 字幕结构在 edge provider 下可以直接产出

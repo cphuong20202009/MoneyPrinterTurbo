@@ -10,6 +10,10 @@ services:
     ports:
       - "127.0.0.1:8501:8501"
     command: [ "streamlit", "run", "./webui/Main.py","--browser.serverAddress=127.0.0.1","--server.enableCORS=True","--browser.gatherUsageStats=False" ]
+    environment:
+      MONEYPRINTER_API_BASE_URL: http://api:8080/api/v1
+    depends_on:
+      - api
     volumes: *common-volumes
     restart: always
   api:

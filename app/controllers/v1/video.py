@@ -11,10 +11,11 @@ from loguru import logger
 
 from app.config import config
 from app.controllers import base
-from app.controllers.manager.base_manager import TaskQueueFullError
+from app.controllers.manager.base_manager import TaskNotQueuedError, TaskQueueFullError
 from app.controllers.manager.memory_manager import InMemoryTaskManager
 from app.controllers.manager.redis_manager import RedisTaskManager
 from app.controllers.v1.base import new_router
+from app.models import const
 from app.models.exception import HttpException
 from app.models.schema import (
     AudioRequest,
@@ -26,8 +27,8 @@ from app.models.schema import (
     TaskQueryResponse,
     TaskResponse,
     TaskVideoRequest,
+    VideoMaterialRetrieveResponse,
     VideoMaterialUploadResponse,
-    VideoMaterialRetrieveResponse
 )
 from app.services import state as sm
 from app.services import task as tm
@@ -207,6 +208,42 @@ def get_task(
     raise HttpException(
         task_id=task_id, status_code=404, message=f"{request_id}: task not found"
     )
+
+
+@router.post("/tasks/{task_id}/cancel", summary="Cancel a queued or running task")
+def cancel_task(request: Request, task_id: str = Path(..., description="Task ID")):
+    request_id = base.get_task_id(request)
+    task = sm.state.get_task(task_id)
+    if not task:
+        raise HttpException(
+            task_id=task_id,
+            status_code=404,
+            message=f"{request_id}: task not found",
+        )
+
+    state = task.get("state")
+    if state == const.TASK_STATE_QUEUED:
+        try:
+            task_manager.remove_queued_task(task_id)
+        except TaskNotQueuedError:
+            # The worker may have dequeued the task between the state read and
+            # queue removal. Marking it for cooperative cancellation handles
+            # that transition without allowing the task to continue silently.
+            tm.request_cancel_task(task_id)
+        else:
+            sm.state.update_task(task_id, state=const.TASK_STATE_CANCELED, progress=0)
+    elif state == const.TASK_STATE_PROCESSING:
+        tm.request_cancel_task(task_id)
+    elif state == const.TASK_STATE_CANCELED:
+        pass
+    else:
+        raise HttpException(
+            task_id=task_id,
+            status_code=409,
+            message=f"{request_id}: completed or failed task cannot be canceled",
+        )
+
+    return utils.get_response(200, {"task_id": task_id, "state": "canceled"})
 
 
 @router.delete(

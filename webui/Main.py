@@ -3,6 +3,7 @@ import sys
 import webbrowser
 from uuid import UUID, uuid4
 
+import requests
 import streamlit as st
 from loguru import logger
 
@@ -15,8 +16,6 @@ if root_dir not in sys.path:
     print("")
 
 from app.config import config
-from app.controllers.manager.base_manager import TaskNotQueuedError, TaskQueueFullError
-from app.controllers.manager.memory_manager import InMemoryTaskManager
 from app.models import const
 from app.models.schema import (
     MaterialInfo,
@@ -26,8 +25,6 @@ from app.models.schema import (
     VideoTransitionMode,
 )
 from app.services import llm, voice
-from app.services import state as sm
-from app.services import task as tm
 from app.utils import utils
 
 st.set_page_config(
@@ -83,12 +80,24 @@ if "queued_video_tasks" not in st.session_state:
     st.session_state["queued_video_tasks"] = []
 
 
-@st.cache_resource
-def get_webui_task_manager():
-    return InMemoryTaskManager(
-        max_concurrent_tasks=config.app.get("max_concurrent_tasks", 1),
-        max_queued_tasks=config.app.get("max_queued_tasks", 100),
+def get_internal_api_base_url():
+    return os.getenv(
+        "MONEYPRINTER_API_BASE_URL", "http://127.0.0.1:8080/api/v1"
+    ).rstrip("/")
+
+
+def api_request(method: str, path: str, **kwargs):
+    response = requests.request(
+        method,
+        f"{get_internal_api_base_url()}/{path.lstrip('/')}",
+        timeout=30,
+        **kwargs,
     )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("status") != 200:
+        raise RuntimeError(payload.get("message", "API request failed"))
+    return payload.get("data") or {}
 
 # 加载语言文件
 locales = utils.load_locales(i18n_dir)
@@ -822,6 +831,7 @@ with middle_panel:
             ("siliconflow", "SiliconFlow TTS"),
             ("gemini-tts", "Google Gemini TTS"),
             ("mimo-tts", "Xiaomi MiMo TTS"),
+            ("elevenlabs-tts", "ElevenLabs TTS"),
         ]
 
         # 获取保存的TTS服务器，默认为v1
@@ -858,6 +868,15 @@ with middle_panel:
         elif selected_tts_server == "mimo-tts":
             # 获取 Xiaomi MiMo TTS 的预置音色列表
             filtered_voices = voice.get_mimo_voices()
+        elif selected_tts_server == "elevenlabs-tts":
+            filtered_voices = voice.get_elevenlabs_voices()
+            elevenlabs_voices_error = voice.get_elevenlabs_voices_error()
+            if elevenlabs_voices_error:
+                st.warning(
+                    "Unable to load ElevenLabs voices: "
+                    f"{elevenlabs_voices_error} "
+                    "Create an ElevenLabs API key with the voices_read permission."
+                )
         else:
             # 获取Azure的声音列表
             all_voices = voice.get_all_azure_voices(filter_locals=None)
@@ -958,9 +977,22 @@ with middle_panel:
                     )
 
                 if sub_maker and os.path.exists(audio_file):
-                    st.audio(audio_file, format="audio/mp3")
+                    # Streamlit serves media after this script run. Pass bytes so
+                    # removing the temporary file cannot race with browser playback.
+                    with open(audio_file, "rb") as preview_audio:
+                        st.audio(
+                            preview_audio.read(),
+                            format="audio/mp3",
+                            autoplay=True,
+                        )
+                    st.success("Đã tạo xong bản nghe thử.")
                     if os.path.exists(audio_file):
                         os.remove(audio_file)
+                else:
+                    st.error(
+                        "Không thể tổng hợp giọng nói. Vui lòng kiểm tra cấu hình "
+                        "TTS, API key và model đã chọn."
+                    )
 
         # 当选择V2版本或者声音是V2声音时，显示服务区域和API key输入框
         if selected_tts_server == "azure-tts-v2" or (
@@ -1033,6 +1065,47 @@ with middle_panel:
             )
 
             config.app["mimo_api_key"] = mimo_api_key
+
+        if selected_tts_server == "elevenlabs-tts" or (
+            voice_name and voice.is_elevenlabs_voice(voice_name)
+        ):
+            elevenlabs_api_key = st.text_input(
+                "ElevenLabs API Key",
+                value=config.app.get("elevenlabs_api_key", ""),
+                type="password",
+                key="elevenlabs_api_key_input",
+            )
+            elevenlabs_voice_id = st.text_input(
+                "ElevenLabs Voice ID",
+                value=config.app.get(
+                    "elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM"
+                ),
+                key="elevenlabs_voice_id_input",
+            )
+            elevenlabs_model_id = st.text_input(
+                "ElevenLabs Model ID",
+                value=config.app.get(
+                    "elevenlabs_model_id", "eleven_turbo_v2_5"
+                ),
+                key="elevenlabs_model_id_input",
+            )
+            elevenlabs_language_code = st.text_input(
+                "ElevenLabs Language Code",
+                value=config.app.get("elevenlabs_language_code", ""),
+                key="elevenlabs_language_code_input",
+                help=(
+                    "Optional ISO 639-1 code. Leave empty to auto-detect. "
+                    "Some models, including eleven_multilingual_v2, reject 'vi'."
+                ),
+            )
+            st.info(
+                "ElevenLabs voices are loaded from your account. "
+                "After entering the API key, the page reruns and refreshes the voice list."
+            )
+            config.app["elevenlabs_api_key"] = elevenlabs_api_key
+            config.app["elevenlabs_voice_id"] = elevenlabs_voice_id
+            config.app["elevenlabs_model_id"] = elevenlabs_model_id
+            config.app["elevenlabs_language_code"] = elevenlabs_language_code
 
         params.voice_volume = st.selectbox(
             tr("Speech Volume"),
@@ -1347,52 +1420,67 @@ if start_button:
     logger.info(utils.to_json(params))
     scroll_to_bottom()
 
-    task_manager = get_webui_task_manager()
     try:
-        sm.state.update_task(task_id, state=const.TASK_STATE_QUEUED, progress=0)
-        task_manager.add_task(tm.start, task_id=task_id, params=params, stop_at="video")
-    except TaskQueueFullError as e:
-        sm.state.delete_task(task_id)
-        st.error(str(e))
-        logger.warning(f"reject video task because queue is full: {task_id}")
+        task_data = api_request(
+            "POST", "videos", json=params.model_dump(mode="json")
+        )
+        task_id = task_data["task_id"]
+    except (requests.RequestException, RuntimeError, KeyError, ValueError) as e:
+        st.error(f"Không thể đưa video vào queue: {e}")
+        logger.exception("failed to queue video task through API")
         scroll_to_bottom()
         st.stop()
 
     if task_id not in st.session_state["queued_video_tasks"]:
         st.session_state["queued_video_tasks"].insert(0, task_id)
 
-    queue_size = task_manager.queue_size()
-    st.success(
-        f"Đã đưa video vào queue. Task ID: {task_id}. "
-        f"Đang chạy: {task_manager.current_tasks}, đang chờ: {queue_size}."
-    )
-    logger.info(
-        f"video task queued: {task_id}, current_tasks: {task_manager.current_tasks}, "
-        f"queue_size: {queue_size}"
-    )
+    st.success(f"Đã đưa video vào queue. Task ID: {task_id}.")
+    logger.info(f"video task queued through API: {task_id}")
     st.info("Bạn có thể tạo video tiếp theo ngay, không cần chờ task này hoàn tất.")
     scroll_to_bottom()
 
 config.save_config()
 
-queued_task_ids = st.session_state.get("queued_video_tasks", [])
+queued_task_ids = list(st.session_state.get("queued_video_tasks", []))
+try:
+    recent_task_data = api_request(
+        "GET", "tasks", params={"page": 1, "page_size": 20}
+    )
+    for recent_task in recent_task_data.get("tasks", []):
+        recent_task_id = recent_task.get("task_id")
+        if recent_task_id and recent_task_id not in queued_task_ids:
+            queued_task_ids.append(recent_task_id)
+except (requests.RequestException, RuntimeError, ValueError):
+    logger.debug("API task list is temporarily unavailable")
+
 if queued_task_ids:
     with st.sidebar.expander("Queued video tasks", expanded=False):
-        task_manager = get_webui_task_manager()
         for queued_task_id in queued_task_ids[:10]:
-            task = sm.state.get_task(queued_task_id) or {}
+            try:
+                task = api_request("GET", f"tasks/{queued_task_id}")
+            except requests.HTTPError as e:
+                if e.response is not None and e.response.status_code == 404:
+                    task = {"state": "not found", "progress": 0}
+                else:
+                    task = {"state": "unavailable", "progress": 0}
+            except (requests.RequestException, RuntimeError, ValueError):
+                task = {"state": "unavailable", "progress": 0}
             state = task.get("state", "queued")
             progress = task.get("progress", 0)
-            st.write(f"{queued_task_id} | state: {state} | progress: {progress}%")
+            state_label = {
+                const.TASK_STATE_FAILED: "failed",
+                const.TASK_STATE_QUEUED: "queued",
+                const.TASK_STATE_COMPLETE: "complete",
+                const.TASK_STATE_CANCELED: "canceled",
+                const.TASK_STATE_PROCESSING: "processing",
+            }.get(state, state)
+            st.write(
+                f"{queued_task_id} | state: {state_label} | progress: {progress}%"
+            )
             if state == const.TASK_STATE_QUEUED:
                 if st.button("Cancel", key=f"cancel-{queued_task_id}"):
                     try:
-                        task_manager.remove_queued_task(queued_task_id)
-                        sm.state.update_task(
-                            queued_task_id,
-                            state=const.TASK_STATE_CANCELED,
-                            progress=0,
-                        )
+                        api_request("POST", f"tasks/{queued_task_id}/cancel")
                         st.session_state["queued_video_tasks"] = [
                             task_id
                             for task_id in st.session_state["queued_video_tasks"]
@@ -1400,10 +1488,13 @@ if queued_task_ids:
                         ]
                         st.toast(f"Canceled task {queued_task_id}")
                         st.rerun()
-                    except TaskNotQueuedError:
-                        st.warning("Task này đã bắt đầu chạy hoặc không còn trong queue.")
+                    except (requests.RequestException, RuntimeError, ValueError) as e:
+                        st.warning(f"Không thể hủy task: {e}")
             elif state == const.TASK_STATE_PROCESSING:
                 if st.button("Stop", key=f"stop-{queued_task_id}"):
-                    tm.request_cancel_task(queued_task_id)
-                    st.toast(f"Stop requested for task {queued_task_id}")
-                    st.rerun()
+                    try:
+                        api_request("POST", f"tasks/{queued_task_id}/cancel")
+                        st.toast(f"Stop requested for task {queued_task_id}")
+                        st.rerun()
+                    except (requests.RequestException, RuntimeError, ValueError) as e:
+                        st.warning(f"Không thể dừng task: {e}")

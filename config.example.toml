@@ -151,6 +151,20 @@ mimo_tts_model_name = "mimo-v2.5-tts"
 # Optional natural language style prompt for MiMo TTS.
 mimo_tts_style_prompt = "请用自然、清晰、适合短视频旁白的语气朗读。"
 
+########## ElevenLabs TTS
+# Create an API key at https://elevenlabs.io/app/settings/api-keys
+# Voice IDs are loaded from GET /v2/voices after the key is configured.
+elevenlabs_api_key = ""
+elevenlabs_voice_id = "21m00Tcm4TlvDq8ikWAM"
+elevenlabs_model_id = "eleven_turbo_v2_5"
+# Optional. Leave empty to let ElevenLabs auto-detect the language.
+elevenlabs_language_code = "vi"
+elevenlabs_output_format = "mp3_44100_128"
+elevenlabs_stability = 0.5
+elevenlabs_similarity_boost = 0.75
+elevenlabs_style = 0.0
+elevenlabs_use_speaker_boost = true
+
 ########## DeepSeek API Key
 # Visit https://platform.deepseek.com/api_keys to get your API key
 deepseek_api_key = ""
