@@ -46,6 +46,21 @@ def _configure_pydub_ffmpeg(audio_segment_cls):
         audio_segment_cls.converter = configured_ffmpeg
 
 
+def normalize_elevenlabs_voice_id(value: str | None) -> str:
+    """Return a raw ElevenLabs voice_id from a pasted ID or internal voice value."""
+    voice_id = str(value or "").strip()
+    if voice_id.startswith("elevenlabs:"):
+        parts = voice_id.split(":", 2)
+        if len(parts) >= 2:
+            return parts[1].strip()
+
+    match = re.search(r"/text-to-speech/([^/?#]+)", voice_id)
+    if match:
+        return match.group(1).strip()
+
+    return voice_id
+
+
 def mktimestamp(time_unit: float) -> str:
     """
     将 edge_tts 使用的 100 纳秒时间单位转换为字幕时间戳。
@@ -151,6 +166,7 @@ def get_elevenlabs_voices() -> list[str]:
     configured_voice_id = (
         config.app.get("elevenlabs_voice_id", _ELEVENLABS_DEFAULT_VOICE_ID) or ""
     ).strip()
+    configured_voice_id = normalize_elevenlabs_voice_id(configured_voice_id)
 
     if not api_key:
         _elevenlabs_voices_error = "ElevenLabs API key is not set."
@@ -177,6 +193,13 @@ def get_elevenlabs_voices() -> list[str]:
             voices.append(f"elevenlabs:{voice_id}:{display_name}")
 
         if voices:
+            configured_voice = f"elevenlabs:{configured_voice_id}:Configured Voice"
+            if configured_voice_id and not any(
+                v.split(":", 2)[1] == configured_voice_id
+                for v in voices
+                if v.startswith("elevenlabs:")
+            ):
+                voices.insert(0, configured_voice)
             return voices
     except requests.exceptions.RequestException as exc:
         error_message = str(exc)
@@ -1230,6 +1253,9 @@ def elevenlabs_tts(
     voice_volume: float = 1.0,
 ) -> Union[SubMaker, None]:
     """Generate an MP3 narration with ElevenLabs Text to Speech."""
+    latest_config = config.load_config()
+    config.app.update(latest_config.get("app", {}))
+    voice_id = normalize_elevenlabs_voice_id(voice_id)
     api_key = (config.app.get("elevenlabs_api_key", "") or "").strip()
     model_id = (
         config.app.get("elevenlabs_model_id", _ELEVENLABS_DEFAULT_MODEL) or ""

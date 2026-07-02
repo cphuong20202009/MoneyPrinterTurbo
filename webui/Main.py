@@ -57,6 +57,80 @@ song_dir = os.path.join(root_dir, "resource", "songs")
 i18n_dir = os.path.join(root_dir, "webui", "i18n")
 config_file = os.path.join(root_dir, "webui", ".streamlit", "webui.toml")
 system_locale = utils.get_system_locale()
+SAVED_VIDEO_SETTINGS_KEY = "saved_video_settings"
+LEGACY_LAST_VIDEO_PARAMS_KEY = "last_video_params"
+
+
+VIDEO_SETTING_FIELDS = {
+    "video_source",
+    "video_materials",
+    "video_aspect",
+    "video_concat_mode",
+    "video_transition_mode",
+    "video_clip_duration",
+    "video_count",
+}
+
+AUDIO_SETTING_FIELDS = {
+    "voice_name",
+    "voice_volume",
+    "voice_rate",
+    "bgm_type",
+    "bgm_file",
+    "bgm_volume",
+}
+
+SUBTITLE_SETTING_FIELDS = {
+    "subtitle_enabled",
+    "subtitle_position",
+    "custom_position",
+    "font_name",
+    "text_fore_color",
+    "text_background_color",
+    "rounded_subtitle_background",
+    "font_size",
+    "stroke_color",
+    "stroke_width",
+}
+
+SAVED_SETTING_FIELDS = (
+    VIDEO_SETTING_FIELDS | AUDIO_SETTING_FIELDS | SUBTITLE_SETTING_FIELDS
+)
+
+
+def get_saved_video_settings() -> dict:
+    saved_settings = config.ui.get(SAVED_VIDEO_SETTINGS_KEY, {})
+    if isinstance(saved_settings, dict) and saved_settings:
+        return saved_settings
+
+    legacy_params = config.ui.get(LEGACY_LAST_VIDEO_PARAMS_KEY, {})
+    if isinstance(legacy_params, dict):
+        return {
+            key: value
+            for key, value in legacy_params.items()
+            if key in SAVED_SETTING_FIELDS
+        }
+
+    return {}
+
+
+saved_video_settings = get_saved_video_settings()
+
+
+def saved_setting(name: str, default=None):
+    return saved_video_settings.get(name, default)
+
+
+def option_index(options, value, default_index=0, value_index=1):
+    values = [item[value_index] if isinstance(item, tuple) else item for item in options]
+    return values.index(value) if value in values else default_index
+
+
+def save_video_settings(params: VideoParams):
+    snapshot = params.model_dump(mode="json")
+    config.ui[SAVED_VIDEO_SETTINGS_KEY] = {
+        key: value for key, value in snapshot.items() if key in SAVED_SETTING_FIELDS
+    }
 
 
 if "video_subject" not in st.session_state:
@@ -75,7 +149,9 @@ if "ui_language" not in st.session_state:
     st.session_state["ui_language"] = config.ui.get("language", system_locale)
 if "local_video_materials" not in st.session_state:
     # 记住用户最近一次已经落盘的本地素材，避免仅修改文案后二次生成时丢失素材列表。
-    st.session_state["local_video_materials"] = []
+    st.session_state["local_video_materials"] = (
+        saved_setting("video_materials", []) or []
+    )
 if "queued_video_tasks" not in st.session_state:
     st.session_state["queued_video_tasks"] = []
 
@@ -636,7 +712,9 @@ with left_panel:
                 tr("Script Paragraph Number"),
                 min_value=llm.MIN_SCRIPT_PARAGRAPH_NUMBER,
                 max_value=llm.MAX_SCRIPT_PARAGRAPH_NUMBER,
-                value=st.session_state.get("paragraph_number_input", 1),
+                value=st.session_state.get(
+                    "paragraph_number_input", 1
+                ),
                 key="paragraph_number_input",
             )
             params.video_script_prompt = st.text_area(
@@ -718,10 +796,10 @@ with middle_panel:
             (tr("Xiaohongshu"), "xiaohongshu"),
         ]
 
-        saved_video_source_name = config.app.get("video_source", "pexels")
-        saved_video_source_index = [v[1] for v in video_sources].index(
-            saved_video_source_name
+        saved_video_source_name = saved_setting(
+            "video_source", config.app.get("video_source", "pexels")
         )
+        saved_video_source_index = option_index(video_sources, saved_video_source_name)
 
         selected_index = st.selectbox(
             tr("Video Source"),
@@ -743,7 +821,9 @@ with middle_panel:
 
         selected_index = st.selectbox(
             tr("Video Concat Mode"),
-            index=1,
+            index=option_index(
+                video_concat_modes, saved_setting("video_concat_mode", "random"), 1
+            ),
             options=range(
                 len(video_concat_modes)
             ),  # Use the index as the internal option value
@@ -768,7 +848,9 @@ with middle_panel:
             tr("Video Transition Mode"),
             options=range(len(video_transition_modes)),
             format_func=lambda x: video_transition_modes[x][0],
-            index=0,
+            index=option_index(
+                video_transition_modes, saved_setting("video_transition_mode", None), 0
+            ),
         )
         params.video_transition_mode = VideoTransitionMode(
             video_transition_modes[selected_index][1]
@@ -786,16 +868,29 @@ with middle_panel:
             format_func=lambda x: video_aspect_ratios[x][
                 0
             ],  # The label is displayed to the user
+            index=option_index(
+                video_aspect_ratios,
+                saved_setting("video_aspect", VideoAspect.portrait.value),
+                0,
+            ),
         )
         params.video_aspect = VideoAspect(video_aspect_ratios[selected_index][1])
 
+        clip_duration_options = [2, 3, 4, 5, 6, 7, 8, 9, 10]
         params.video_clip_duration = st.selectbox(
-            tr("Clip Duration"), options=[2, 3, 4, 5, 6, 7, 8, 9, 10], index=1
+            tr("Clip Duration"),
+            options=clip_duration_options,
+            index=clip_duration_options.index(saved_setting("video_clip_duration", 3))
+            if saved_setting("video_clip_duration", 3) in clip_duration_options
+            else 1,
         )
+        video_count_options = [1, 2, 3, 4, 5]
         params.video_count = st.selectbox(
             tr("Number of Videos Generated Simultaneously"),
-            options=[1, 2, 3, 4, 5],
-            index=4,
+            options=video_count_options,
+            index=video_count_options.index(saved_setting("video_count", 5))
+            if saved_setting("video_count", 5) in video_count_options
+            else 4,
         )
 
         with st.expander(tr("Advanced Video Settings"), expanded=False):
@@ -836,6 +931,19 @@ with middle_panel:
 
         # 获取保存的TTS服务器，默认为v1
         saved_tts_server = config.ui.get("tts_server", "azure-tts-v1")
+        saved_voice_for_server = saved_setting(
+            "voice_name", config.ui.get("voice_name", "")
+        )
+        if voice.is_elevenlabs_voice(saved_voice_for_server):
+            saved_tts_server = "elevenlabs-tts"
+        elif voice.is_mimo_voice(saved_voice_for_server):
+            saved_tts_server = "mimo-tts"
+        elif voice.is_gemini_voice(saved_voice_for_server):
+            saved_tts_server = "gemini-tts"
+        elif voice.is_siliconflow_voice(saved_voice_for_server):
+            saved_tts_server = "siliconflow"
+        elif saved_voice_for_server == voice.NO_VOICE_NAME:
+            saved_tts_server = voice.NO_VOICE_NAME
         saved_tts_server_index = 0
         for i, (server_value, _) in enumerate(tts_servers):
             if server_value == saved_tts_server:
@@ -902,7 +1010,8 @@ with middle_panel:
                 for v in filtered_voices
             }
 
-        saved_voice_name = config.ui.get("voice_name", "")
+        saved_voice_name = saved_setting("voice_name", config.ui.get("voice_name", ""))
+        voice_name = ""
         saved_voice_name_index = 0
 
         # 检查保存的声音是否在当前筛选的声音列表中
@@ -943,6 +1052,59 @@ with middle_panel:
             )
             params.voice_name = ""
             config.ui["voice_name"] = ""
+
+        if selected_tts_server == "elevenlabs-tts" or (
+            voice_name and voice.is_elevenlabs_voice(voice_name)
+        ):
+            elevenlabs_api_key = st.text_input(
+                "ElevenLabs API Key",
+                value=config.app.get("elevenlabs_api_key", ""),
+                type="password",
+                key="elevenlabs_api_key_input",
+            )
+            elevenlabs_voice_id = st.text_input(
+                "ElevenLabs Voice ID",
+                value=config.app.get(
+                    "elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM"
+                ),
+                key="elevenlabs_voice_id_input",
+                help=(
+                    "Paste a voice_id from ElevenLabs. This value is used directly "
+                    "for preview and video generation."
+                ),
+            ).strip()
+            elevenlabs_voice_id = voice.normalize_elevenlabs_voice_id(
+                elevenlabs_voice_id
+            )
+            elevenlabs_model_id = st.text_input(
+                "ElevenLabs Model ID",
+                value=config.app.get(
+                    "elevenlabs_model_id", "eleven_turbo_v2_5"
+                ),
+                key="elevenlabs_model_id_input",
+            )
+            elevenlabs_language_code = st.text_input(
+                "ElevenLabs Language Code",
+                value=config.app.get("elevenlabs_language_code", ""),
+                key="elevenlabs_language_code_input",
+                help=(
+                    "Optional ISO 639-1 code. Leave empty to auto-detect. "
+                    "Some models, including eleven_multilingual_v2, reject 'vi'."
+                ),
+            )
+            st.info(
+                "ElevenLabs voices are loaded from your account. "
+                "If you paste a Voice ID here, it is used directly."
+            )
+            config.app["elevenlabs_api_key"] = elevenlabs_api_key
+            config.app["elevenlabs_voice_id"] = elevenlabs_voice_id
+            config.app["elevenlabs_model_id"] = elevenlabs_model_id
+            config.app["elevenlabs_language_code"] = elevenlabs_language_code
+
+            if elevenlabs_voice_id:
+                voice_name = f"elevenlabs:{elevenlabs_voice_id}:Configured Voice"
+                params.voice_name = voice_name
+                config.ui["voice_name"] = voice_name
 
         # 无配音模式会生成静音占位音频，不展示试听按钮，避免用户误以为需要测试声音。
         if (
@@ -1066,57 +1228,26 @@ with middle_panel:
 
             config.app["mimo_api_key"] = mimo_api_key
 
-        if selected_tts_server == "elevenlabs-tts" or (
-            voice_name and voice.is_elevenlabs_voice(voice_name)
-        ):
-            elevenlabs_api_key = st.text_input(
-                "ElevenLabs API Key",
-                value=config.app.get("elevenlabs_api_key", ""),
-                type="password",
-                key="elevenlabs_api_key_input",
-            )
-            elevenlabs_voice_id = st.text_input(
-                "ElevenLabs Voice ID",
-                value=config.app.get(
-                    "elevenlabs_voice_id", "21m00Tcm4TlvDq8ikWAM"
-                ),
-                key="elevenlabs_voice_id_input",
-            )
-            elevenlabs_model_id = st.text_input(
-                "ElevenLabs Model ID",
-                value=config.app.get(
-                    "elevenlabs_model_id", "eleven_turbo_v2_5"
-                ),
-                key="elevenlabs_model_id_input",
-            )
-            elevenlabs_language_code = st.text_input(
-                "ElevenLabs Language Code",
-                value=config.app.get("elevenlabs_language_code", ""),
-                key="elevenlabs_language_code_input",
-                help=(
-                    "Optional ISO 639-1 code. Leave empty to auto-detect. "
-                    "Some models, including eleven_multilingual_v2, reject 'vi'."
-                ),
-            )
-            st.info(
-                "ElevenLabs voices are loaded from your account. "
-                "After entering the API key, the page reruns and refreshes the voice list."
-            )
-            config.app["elevenlabs_api_key"] = elevenlabs_api_key
-            config.app["elevenlabs_voice_id"] = elevenlabs_voice_id
-            config.app["elevenlabs_model_id"] = elevenlabs_model_id
-            config.app["elevenlabs_language_code"] = elevenlabs_language_code
-
         params.voice_volume = st.selectbox(
             tr("Speech Volume"),
             options=[0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0],
-            index=2,
+            index=option_index(
+                [0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 3.0, 4.0, 5.0],
+                saved_setting("voice_volume", 1.0),
+                2,
+                value_index=0,
+            ),
         )
 
         params.voice_rate = st.selectbox(
             tr("Speech Rate"),
             options=[0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0],
-            index=2,
+            index=option_index(
+                [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5, 1.8, 2.0],
+                saved_setting("voice_rate", 1.0),
+                2,
+                value_index=0,
+            ),
         )
 
         custom_audio_file_types = ["mp3", "wav", "m4a", "aac", "flac", "ogg"]
@@ -1142,7 +1273,7 @@ with middle_panel:
         ]
         selected_index = st.selectbox(
             tr("Background Music"),
-            index=1,
+            index=option_index(bgm_options, saved_setting("bgm_type", "random"), 1),
             options=range(
                 len(bgm_options)
             ),  # Use the index as the internal option value
@@ -1156,7 +1287,9 @@ with middle_panel:
         # Show or hide components based on the selection
         if params.bgm_type == "custom":
             custom_bgm_file = st.text_input(
-                tr("Custom Background Music File"), key="custom_bgm_file_input"
+                tr("Custom Background Music File"),
+                value=saved_setting("bgm_file", ""),
+                key="custom_bgm_file_input",
             )
             if custom_bgm_file:
                 # 这里不直接用 os.path.exists 判断，因为用户常见输入是
@@ -1167,15 +1300,24 @@ with middle_panel:
         params.bgm_volume = st.selectbox(
             tr("Background Music Volume"),
             options=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-            index=2,
+            index=option_index(
+                [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+                saved_setting("bgm_volume", 0.2),
+                2,
+                value_index=0,
+            ),
         )
 
 with right_panel:
     with st.container(border=True):
         st.write(tr("Subtitle Settings"))
-        params.subtitle_enabled = st.checkbox(tr("Enable Subtitles"), value=True)
+        params.subtitle_enabled = st.checkbox(
+            tr("Enable Subtitles"), value=saved_setting("subtitle_enabled", True)
+        )
         font_names = get_all_fonts()
-        saved_font_name = config.ui.get("font_name", "MicrosoftYaHeiBold.ttc")
+        saved_font_name = saved_setting(
+            "font_name", config.ui.get("font_name", "MicrosoftYaHeiBold.ttc")
+        )
         saved_font_name_index = 0
         if saved_font_name in font_names:
             saved_font_name_index = font_names.index(saved_font_name)
@@ -1190,7 +1332,9 @@ with right_panel:
             (tr("Bottom"), "bottom"),
             (tr("Custom"), "custom"),
         ]
-        saved_subtitle_position = config.ui.get("subtitle_position", "bottom")
+        saved_subtitle_position = saved_setting(
+            "subtitle_position", config.ui.get("subtitle_position", "bottom")
+        )
         saved_position_index = 2
         for i, (_, pos_value) in enumerate(subtitle_positions):
             if pos_value == saved_subtitle_position:
@@ -1209,7 +1353,7 @@ with right_panel:
             saved_custom_position = config.ui.get("custom_position", 70.0)
             custom_position = st.text_input(
                 tr("Custom Position (% from top)"),
-                value=str(saved_custom_position),
+                value=str(saved_setting("custom_position", saved_custom_position)),
                 key="custom_position_input",
             )
             try:
@@ -1223,27 +1367,38 @@ with right_panel:
 
         font_cols = st.columns([0.3, 0.7])
         with font_cols[0]:
-            saved_text_fore_color = config.ui.get("text_fore_color", "#FFFFFF")
+            saved_text_fore_color = saved_setting(
+                "text_fore_color", config.ui.get("text_fore_color", "#FFFFFF")
+            )
             params.text_fore_color = st.color_picker(
                 tr("Font Color"), saved_text_fore_color
             )
             config.ui["text_fore_color"] = params.text_fore_color
 
         with font_cols[1]:
-            saved_font_size = config.ui.get("font_size", 60)
+            saved_font_size = saved_setting("font_size", config.ui.get("font_size", 60))
             params.font_size = st.slider(tr("Font Size"), 30, 100, saved_font_size)
             config.ui["font_size"] = params.font_size
 
         stroke_cols = st.columns([0.3, 0.7])
         with stroke_cols[0]:
-            params.stroke_color = st.color_picker(tr("Stroke Color"), "#000000")
+            params.stroke_color = st.color_picker(
+                tr("Stroke Color"), saved_setting("stroke_color", "#000000")
+            )
         with stroke_cols[1]:
-            params.stroke_width = st.slider(tr("Stroke Width"), 0.0, 10.0, 1.5)
+            params.stroke_width = st.slider(
+                tr("Stroke Width"), 0.0, 10.0, saved_setting("stroke_width", 1.5)
+            )
 
         subtitle_bg_cols = st.columns([0.4, 0.6])
         saved_subtitle_background_enabled = config.ui.get(
             "subtitle_background_enabled", True
         )
+        saved_text_background_color = saved_setting("text_background_color", True)
+        if isinstance(saved_text_background_color, str):
+            saved_subtitle_background_enabled = True
+        elif saved_text_background_color is False:
+            saved_subtitle_background_enabled = False
         with subtitle_bg_cols[0]:
             subtitle_background_enabled = st.checkbox(
                 tr("Enable Subtitle Background"),
@@ -1255,6 +1410,8 @@ with right_panel:
                 saved_subtitle_background_color = config.ui.get(
                     "subtitle_background_color", "#000000"
                 )
+                if isinstance(saved_text_background_color, str):
+                    saved_subtitle_background_color = saved_text_background_color
                 params.text_background_color = st.color_picker(
                     tr("Subtitle Background Color"),
                     saved_subtitle_background_color,
@@ -1265,6 +1422,9 @@ with right_panel:
 
         saved_rounded_subtitle_background = config.ui.get(
             "rounded_subtitle_background", False
+        )
+        saved_rounded_subtitle_background = saved_setting(
+            "rounded_subtitle_background", saved_rounded_subtitle_background
         )
         # 背景关闭时，圆角背景没有可渲染的底色。这里禁用控件并保留原配置，
         # 用户下次重新开启字幕背景后，可以继续使用之前保存的圆角偏好。
@@ -1434,6 +1594,8 @@ if start_button:
     if task_id not in st.session_state["queued_video_tasks"]:
         st.session_state["queued_video_tasks"].insert(0, task_id)
 
+    save_video_settings(params)
+    config.save_config()
     st.success(f"Đã đưa video vào queue. Task ID: {task_id}.")
     logger.info(f"video task queued through API: {task_id}")
     st.info("Bạn có thể tạo video tiếp theo ngay, không cần chờ task này hoàn tất.")
