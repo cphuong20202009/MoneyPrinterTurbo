@@ -16,7 +16,7 @@ dependencies = [
     "moviepy==2.2.1",
     "streamlit==1.59.1",
     "streamlit-tour==1.1.0",
-    "edge-tts==7.2.7",
+    "edge-tts==7.3.1",
     "fastapi==0.136.3",
     "uvicorn==0.32.1",
     "openai==2.24.0",
@@ -42,6 +42,11 @@ dependencies = [
 # with `uv sync --extra twelvelabs`.
 twelvelabs = [
     "twelvelabs>=1.2.8",
+]
+# MCP server (app/mcp_server.py) so AI clients such as Claude Code can drive
+# video generation without the WebUI. Install with `uv sync --extra mcp`.
+mcp = [
+    "mcp>=2.3,<3",
 ]
 
 [dependency-groups]

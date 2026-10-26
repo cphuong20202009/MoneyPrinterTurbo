@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "moneyprinter": {
+      "command": "uv",
+      "args": ["run", "--extra", "mcp", "python", "-m", "app.mcp_server"]
+    }
+  }
+}

@@ -693,6 +693,46 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
         return final_subtitle_path
 
 
+def _download_stock_fill(
+    task_id, params, video_terms, audio_duration, local_videos: list[str]
+) -> list[str]:
+    """Download stock clips covering what the local materials leave uncovered.
+
+    Stock fill is best effort: a provider failure keeps the local-only video
+    instead of failing a task whose own product footage is usable.
+    """
+    covered = 0.0
+    for local_video in local_videos:
+        try:
+            covered += material._get_downloaded_video_duration(local_video)
+        except ValueError:
+            covered += params.video_clip_duration
+    remaining = audio_duration * params.video_count - covered
+    if remaining <= 0 or not video_terms:
+        return []
+
+    logger.info(
+        f"\n\n## filling {remaining:.1f}s with stock from {params.stock_fill_source}"
+    )
+    try:
+        return material.download_videos(
+            task_id=task_id,
+            search_terms=video_terms,
+            source=params.stock_fill_source,
+            video_aspect=params.video_aspect,
+            video_concat_mode=params.video_concat_mode,
+            audio_duration=remaining,
+            max_clip_duration=params.video_clip_duration,
+            progress_callback=_stage_progress_reporter(task_id, 40, 50),
+        ) or []
+    except Exception as exc:
+        logger.warning(
+            f"stock fill failed, continue with local materials only: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return []
+
+
 def get_video_materials(
     task_id,
     params,
@@ -705,14 +745,19 @@ def get_video_materials(
         materials = video.preprocess_video(
             materials=params.video_materials, clip_duration=params.video_clip_duration
         )
-        if not materials:
+        local_videos = [material_info.url for material_info in materials]
+        if params.stock_fill_source:
+            local_videos += _download_stock_fill(
+                task_id, params, video_terms, audio_duration, local_videos
+            )
+        if not local_videos:
             _mark_task_failed(
                 task_id,
                 "materials",
                 "no valid local video materials were found",
             )
             return None
-        return [material_info.url for material_info in materials]
+        return local_videos
     elif params.video_source == "loomloom":
         if not isinstance(
             loomloom_video_request, loomloom.LoomLoomConfirmedVideoRequest
@@ -1633,7 +1678,9 @@ def _run_pipeline(
 
     # 2. Generate terms
     video_terms = ""
-    if stop_at in {"terms", "materials", "video"} and params.video_source != "local":
+    if stop_at in {"terms", "materials", "video"} and (
+        params.video_source != "local" or params.stock_fill_source
+    ):
         video_terms = generate_terms(task_id, params, video_script)
         if not video_terms:
             return _mark_task_failed(

@@ -119,6 +119,10 @@ class VideoParams(BaseModel):
     video_materials: Optional[List[MaterialInfo]] = (
         None  # Materials used to generate the video
     )
+    # Only used with video_source="local": when the local materials are shorter
+    # than the narration, download stock clips from this provider to fill the
+    # rest. Local materials stay first on the timeline.
+    stock_fill_source: Optional[Literal["pexels", "pixabay", "coverr"]] = None
 
     custom_audio_file: Optional[str] = (
         None  # Custom audio file path, will ignore TTS and can still use Whisper subtitles
